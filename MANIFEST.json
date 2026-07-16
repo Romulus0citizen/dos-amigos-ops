@@ -1,0 +1,15 @@
+{
+  "artifact": "dos-amigos-ops-s1.1-scaffold",
+  "created": "2026-07-16",
+  "scope": [
+    "S1.1 repository scaffold",
+    "S1.2 service and database skeleton",
+    "S1.3 raw-ingestion model skeleton"
+  ],
+  "file_count": 69,
+  "validation": {
+    "pyproject": "parsed",
+    "python_syntax": "passed for 25 files",
+    "third_party_tests": "run after dependency installation"
+  }
+}
