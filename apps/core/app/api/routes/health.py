@@ -1,3 +1,5 @@
+from typing import Annotated
+
 from fastapi import APIRouter, Depends
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -20,7 +22,7 @@ def live() -> HealthResponse:
 
 
 @router.get("/ready", response_model=HealthResponse)
-def ready(db: Session = Depends(get_db)) -> HealthResponse:
+def ready(db: Annotated[Session, Depends(get_db)]) -> HealthResponse:
     settings = get_settings()
     db.execute(text("SELECT 1"))
     return HealthResponse(
