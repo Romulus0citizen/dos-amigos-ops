@@ -2,9 +2,13 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 SENSITIVE_FRAGMENTS = (
+    "api_login",
+    "apilogin",
     "authorization",
+    "cookie",
     "credential",
     "license_key",
+    "licensekey",
     "password",
     "secret",
     "token",
