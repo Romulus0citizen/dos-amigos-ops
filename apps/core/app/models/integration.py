@@ -3,7 +3,17 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from apps.core.app.models.base import Base
@@ -73,3 +83,26 @@ class RawPayload(Base):
     received_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class IntegrationCapability(Base):
+    __tablename__ = "integration_capabilities"
+    __table_args__ = (
+        UniqueConstraint(
+            "provider",
+            "capability",
+            name="uq_integration_capability",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    provider: Mapped[str] = mapped_column(String(50), nullable=False)
+    capability: Mapped[str] = mapped_column(String(100), nullable=False)
+    status: Mapped[str] = mapped_column(String(30), default="unknown")
+    method_or_report: Mapped[str | None] = mapped_column(String(255))
+    history_depth: Mapped[str | None] = mapped_column(String(100))
+    expected_freshness: Mapped[str | None] = mapped_column(String(100))
+    contains_pii: Mapped[bool] = mapped_column(Boolean, default=False)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    evidence_reference: Mapped[str | None] = mapped_column(String(500))
+    notes: Mapped[str | None] = mapped_column(Text)
