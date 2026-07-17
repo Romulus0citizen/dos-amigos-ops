@@ -18,7 +18,7 @@ def test_capability_table_name() -> None:
 
 
 def test_persistence_contract_columns() -> None:
-    assert set(Base.metadata.tables["integration_connections"].columns) == {
+    assert set(Base.metadata.tables["integration_connections"].columns.keys()) == {
         "id",
         "provider",
         "mode",
@@ -30,7 +30,7 @@ def test_persistence_contract_columns() -> None:
         "updated_at",
     }
 
-    assert set(Base.metadata.tables["sync_runs"].columns) == {
+    assert set(Base.metadata.tables["sync_runs"].columns.keys()) == {
         "id",
         "provider",
         "dataset",
@@ -46,7 +46,7 @@ def test_persistence_contract_columns() -> None:
         "created_at",
     }
 
-    assert set(Base.metadata.tables["raw_payloads"].columns) == {
+    assert set(Base.metadata.tables["raw_payloads"].columns.keys()) == {
         "id",
         "provider",
         "dataset",
