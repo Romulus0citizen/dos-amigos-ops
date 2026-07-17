@@ -72,10 +72,7 @@ def test_postgresql_storage_types() -> None:
 
 
 def test_raw_payload_idempotency_indexes() -> None:
-    indexes = {
-        index.name: index
-        for index in Base.metadata.tables["raw_payloads"].indexes
-    }
+    indexes = {index.name: index for index in Base.metadata.tables["raw_payloads"].indexes}
 
     assert indexes["uq_raw_payload_with_external_reference"].unique
     assert indexes["uq_raw_payload_without_external_reference"].unique

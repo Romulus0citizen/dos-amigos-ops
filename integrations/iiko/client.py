@@ -211,14 +211,31 @@ class BlockedIikoClient(IikoClient):
 def build_iiko_client(
     *,
     mode: IikoMode,
-    organization_ref: str = "8340002",
+    organization_ref: str | None = None,
     base_url: str = "",
     auth_configuration: AuthConfiguration | None = None,
+    verify_tls: bool = True,
+    connect_timeout_seconds: int = 10,
+    read_timeout_seconds: int = 30,
+    max_retries: int = 3,
 ) -> IikoClient:
     if mode is IikoMode.MOCK:
         from integrations.iiko.mock import MockIikoAdapter
 
-        return MockIikoAdapter(organization_ref=organization_ref)
+        return MockIikoAdapter(organization_ref=organization_ref or "8340002")
+
+    if mode is IikoMode.SERVER_REST_API:
+        from integrations.iiko.server_rest import ServerRestIikoClient
+
+        return ServerRestIikoClient(
+            base_url=base_url,
+            organization_ref=organization_ref,
+            auth_configuration=auth_configuration or AuthConfiguration(),
+            verify_tls=verify_tls,
+            connect_timeout_seconds=connect_timeout_seconds,
+            read_timeout_seconds=read_timeout_seconds,
+            max_retries=max_retries,
+        )
 
     return BlockedIikoClient(
         mode=mode,

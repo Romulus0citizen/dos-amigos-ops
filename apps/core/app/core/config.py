@@ -2,6 +2,10 @@ from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from integrations.iiko.auth import AuthConfiguration
+from integrations.iiko.client import IikoClient, build_iiko_client
+from integrations.iiko.schemas import AuthKind, IikoMode
+
 
 class Settings(BaseSettings):
     app_name: str = "dos-amigos-core"
@@ -24,6 +28,26 @@ class Settings(BaseSettings):
     iiko_connect_timeout_seconds: int = 10
     iiko_read_timeout_seconds: int = 30
     iiko_max_retries: int = 3
+
+    def iiko_auth_configuration(self) -> AuthConfiguration:
+        return AuthConfiguration(
+            kind=AuthKind(self.iiko_auth_type),
+            username=self.iiko_username or None,
+            password=self.iiko_password or None,
+            api_login=self.iiko_api_login or None,
+        )
+
+    def build_iiko_client(self) -> IikoClient:
+        return build_iiko_client(
+            mode=IikoMode(self.iiko_mode),
+            organization_ref=self.iiko_organization_id or None,
+            base_url=self.iiko_base_url,
+            auth_configuration=self.iiko_auth_configuration(),
+            verify_tls=self.iiko_verify_tls,
+            connect_timeout_seconds=self.iiko_connect_timeout_seconds,
+            read_timeout_seconds=self.iiko_read_timeout_seconds,
+            max_retries=self.iiko_max_retries,
+        )
 
     model_config = SettingsConfigDict(
         env_file=".env",

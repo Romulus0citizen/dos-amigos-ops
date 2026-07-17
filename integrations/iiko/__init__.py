@@ -14,6 +14,7 @@ from integrations.iiko.schemas import (
     RawResult,
     ResultStatus,
 )
+from integrations.iiko.server_rest import ServerRestIikoClient
 
 __all__ = [
     "AuthConfiguration",
@@ -27,5 +28,6 @@ __all__ = [
     "ProbeResult",
     "RawResult",
     "ResultStatus",
+    "ServerRestIikoClient",
     "build_iiko_client",
 ]

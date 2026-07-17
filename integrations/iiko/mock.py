@@ -18,10 +18,10 @@ class MockIikoAdapter(IikoClient):
 
     def __init__(
         self,
-        organization_ref: str = "8340002",
+        organization_ref: str | None = "8340002",
         organization_id: str | None = None,
     ) -> None:
-        self.organization_ref = organization_id or organization_ref
+        self.organization_ref = organization_id or organization_ref or "8340002"
 
     def _trace_id(self) -> str:
         return str(uuid4())
