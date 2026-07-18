@@ -58,3 +58,27 @@ pytest
 ## Secrets
 
 Never commit `.env`, passwords, API credentials, tokens, license keys, authorization headers, or unredacted production payloads.
+
+## iiko SERVER_REST_API
+
+`IIKO_MODE=server_rest_api` uses the read-only iikoServer REST adapter. The proven surface is authentication through `GET /resto/api/auth`, reading departments through `GET /resto/api/corporation/departments`, and logout through `GET /resto/api/logout`.
+
+The adapter sends the iikoOffice password as a UTF-8 SHA-1 hex digest, stores the returned UUID token only in memory, and never returns or logs the password, password hash, token, or query-bearing auth/logout URLs. TLS verification is enabled by default via `IIKO_VERIFY_TLS=true`.
+
+Still blocked in this mode: terminal groups, nomenclature, menu, orders/sales, payments, inventory, writeoffs, costs, employees, and shifts. These return `BLOCKED` with `dataset_not_implemented_for_server_rest_api`.
+
+Example variables, without secrets:
+
+```bash
+IIKO_MODE=server_rest_api
+IIKO_AUTH_TYPE=user_password
+IIKO_BASE_URL=
+IIKO_USERNAME=
+IIKO_PASSWORD=
+IIKO_API_LOGIN=
+IIKO_ORGANIZATION_ID=
+IIKO_VERIFY_TLS=true
+IIKO_CONNECT_TIMEOUT_SECONDS=10
+IIKO_READ_TIMEOUT_SECONDS=30
+IIKO_MAX_RETRIES=3
+```

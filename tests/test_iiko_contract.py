@@ -9,6 +9,7 @@ from integrations.iiko import (
     ResultStatus,
     build_iiko_client,
 )
+from integrations.iiko.server_rest import ServerRestIikoClient
 
 
 def test_auth_configuration_repr_hides_secrets() -> None:
@@ -35,10 +36,17 @@ def test_factory_builds_mock_client() -> None:
     assert isinstance(client, MockIikoAdapter)
 
 
+def test_factory_builds_mock_client_with_internal_fixture_when_ref_is_omitted() -> None:
+    client = build_iiko_client(mode=IikoMode.MOCK)
+
+    assert isinstance(client, MockIikoAdapter)
+    assert client.organization_ref == "8340002"
+
+
 @pytest.mark.asyncio
-async def test_unconfirmed_real_adapter_is_safely_blocked() -> None:
+async def test_other_real_adapters_are_safely_blocked() -> None:
     client = build_iiko_client(
-        mode=IikoMode.SERVER_REST_API,
+        mode=IikoMode.CLOUD_API,
         organization_ref="8340002",
         auth_configuration=AuthConfiguration(
             kind=AuthKind.USER_PASSWORD,
@@ -60,3 +68,33 @@ async def test_unconfirmed_real_adapter_is_safely_blocked() -> None:
 
     assert discovery.status is ResultStatus.BLOCKED
     assert discovery.payload is None
+
+
+def test_server_rest_factory_returns_real_read_only_adapter() -> None:
+    client = build_iiko_client(
+        mode=IikoMode.SERVER_REST_API,
+        organization_ref="8340002",
+        base_url="https://example.iiko.it/resto",
+        auth_configuration=AuthConfiguration(
+            kind=AuthKind.USER_PASSWORD,
+            username="api_dos_amigos",
+            password="do-not-print",
+        ),
+    )
+
+    assert isinstance(client, ServerRestIikoClient)
+
+
+def test_server_rest_factory_does_not_invent_organization_ref() -> None:
+    client = build_iiko_client(
+        mode=IikoMode.SERVER_REST_API,
+        base_url="https://example.iiko.it/resto",
+        auth_configuration=AuthConfiguration(
+            kind=AuthKind.USER_PASSWORD,
+            username="api_dos_amigos",
+            password="do-not-print",
+        ),
+    )
+
+    assert isinstance(client, ServerRestIikoClient)
+    assert client.organization_ref is None

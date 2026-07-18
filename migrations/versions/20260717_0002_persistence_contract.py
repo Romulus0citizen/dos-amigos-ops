@@ -28,9 +28,7 @@ def _assert_tables_are_empty() -> None:
     connection = op.get_bind()
 
     for table_name in TABLES:
-        row_count = connection.execute(
-            sa.text(f'SELECT COUNT(*) FROM "{table_name}"')
-        ).scalar_one()
+        row_count = connection.execute(sa.text(f'SELECT COUNT(*) FROM "{table_name}"')).scalar_one()
 
         if row_count:
             raise RuntimeError(
