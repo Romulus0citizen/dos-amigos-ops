@@ -1,0 +1,15 @@
+[Unit]
+Description=Dos Amigos one-shot iiko sales automation
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+User=dos-amigos
+WorkingDirectory=/opt/dos-amigos-ops/current
+ExecStart=/opt/dos-amigos-ops/current/ops/bin/run-sales-sync.sh
+TimeoutStartSec=1800
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

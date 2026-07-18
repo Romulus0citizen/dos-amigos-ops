@@ -16,6 +16,8 @@ venv/
 !.env.example
 .idea/
 .vscode/
+.codegraph/
+.cursor/
 .DS_Store
 Thumbs.db
 logs/

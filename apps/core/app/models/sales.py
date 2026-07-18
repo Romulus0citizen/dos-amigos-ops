@@ -5,6 +5,8 @@ from decimal import Decimal
 from uuid import uuid4
 
 from sqlalchemy import (
+    JSON,
+    Boolean,
     Date,
     DateTime,
     Index,
@@ -72,6 +74,7 @@ class IikoSalesDaily(Base):
     source_checksum: Mapped[str] = mapped_column(String(64), nullable=False)
     result_status: Mapped[str] = mapped_column(String(30), nullable=False)
     reconciliation_error_code: Mapped[str | None] = mapped_column(String(120))
+    requires_resync: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     imported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -127,4 +130,73 @@ class IikoSalesDailyProduct(Base):
     refund_quantity: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
     refund_amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
     imported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class IikoSalesAutomationRun(Base):
+    __tablename__ = "iiko_sales_automation_runs"
+    __table_args__ = (
+        Index("ix_iiko_sales_automation_runs_started_at", "started_at"),
+        Index("ix_iiko_sales_automation_runs_status", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_string)
+    trigger_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    requested_date_from: Mapped[date | None] = mapped_column(Date)
+    requested_date_to: Mapped[date | None] = mapped_column(Date)
+    business_timezone: Mapped[str] = mapped_column(String(100), nullable=False)
+    scheduled_local_time: Mapped[str | None] = mapped_column(String(5))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(30), nullable=False)
+    days_considered: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    days_processed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    days_unchanged: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    days_partial: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    days_failed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    outbox_created: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_code: Mapped[str | None] = mapped_column(String(120))
+    error_message_redacted: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
+class HermesReportOutbox(Base):
+    __tablename__ = "hermes_report_outbox"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_hermes_report_outbox_idempotency_key"),
+        Index(
+            "ix_hermes_report_outbox_report_day",
+            "report_type",
+            "organization_id",
+            "business_date",
+        ),
+        Index("ix_hermes_report_outbox_delivery_status", "delivery_status"),
+        Index("ix_hermes_report_outbox_next_attempt", "next_attempt_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_string)
+    report_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    organization_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    business_date: Mapped[date] = mapped_column(Date, nullable=False)
+    source_checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    payload_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    payload_markdown: Mapped[str] = mapped_column(Text, nullable=False)
+    delivery_status: Mapped[str] = mapped_column(String(30), nullable=False, default="pending")
+    delivery_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    external_message_id: Mapped[str | None] = mapped_column(String(255))
+    error_code: Mapped[str | None] = mapped_column(String(120))
+    error_message_redacted: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 
 from apps.core.app.api.routes.health import router as health_router
+from apps.core.app.api.routes.sales_automation import router as sales_automation_router
 from apps.core.app.api.routes.sales_reports import router as sales_reports_router
 from apps.core.app.core.config import get_settings
 
@@ -12,6 +13,11 @@ app.include_router(
     sales_reports_router,
     prefix="/api/v1/reports/sales",
     tags=["sales-reports"],
+)
+app.include_router(
+    sales_automation_router,
+    prefix="/api/v1/operations/sales-automation",
+    tags=["sales-automation"],
 )
 
 
