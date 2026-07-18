@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 LOCK_FILE="${DOS_AMIGOS_SALES_SYNC_LOCK_FILE:-/tmp/dos-amigos-sales-sync.lock}"
-RELEASE_DIR="${DOS_AMIGOS_RELEASE_DIR:-/opt/dos-amigos-ops/current}"
+RELEASE_DIR="${DOS_AMIGOS_RELEASE_DIR:-/opt/dos-amigos-core}"
 
 exec 9>"${LOCK_FILE}"
 flock -n 9
