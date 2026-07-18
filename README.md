@@ -65,7 +65,7 @@ Never commit `.env`, passwords, API credentials, tokens, license keys, authoriza
 
 The adapter sends the iikoOffice password as a UTF-8 SHA-1 hex digest, stores the returned UUID token only in memory, and never returns or logs the password, password hash, token, or query-bearing auth/logout URLs. TLS verification is enabled by default via `IIKO_VERIFY_TLS=true`.
 
-Still blocked in this mode: terminal groups, nomenclature, menu, orders/sales, payments, inventory, writeoffs, costs, employees, and shifts. These return `BLOCKED` with `dataset_not_implemented_for_server_rest_api`.
+Still blocked in this mode: terminal groups, nomenclature, menu, payments, inventory, writeoffs, costs, employees, and shifts. These return `BLOCKED` with `dataset_not_implemented_for_server_rest_api`.
 
 Example variables, without secrets:
 
@@ -104,3 +104,22 @@ curl "http://localhost:8000/api/v1/reports/sales/daily?date=2026-07-16&organizat
 ```
 
 See `docs/iiko-sales-discovery.md` and `docs/s1-6-1-sales-import-runbook.md`.
+
+## Sales Automation And Hermes Outbox
+
+S1.6.1a adds a one-shot automation CLI intended for a host-level systemd timer. The FastAPI process does not run a scheduler.
+
+```bash
+python -m apps.core.app.cli.iiko_sales_automation --run-due --json
+python -m apps.core.app.cli.iiko_sales_automation --backfill --backfill-days 7 --json
+python -m apps.core.app.cli.iiko_sales_automation --rebuild-outbox --json
+python -m apps.core.app.cli.publish_hermes_reports --json
+```
+
+Automation status is read-only:
+
+```bash
+curl "http://localhost:8000/api/v1/operations/sales-automation/status"
+```
+
+`HERMES_DELIVERY_MODE=disabled` is the safe default: reports are queued in `hermes_report_outbox`, but no delivery is attempted until a real Hermes contract is confirmed. See `docs/s1-6-1a-sales-automation-runbook.md` and `docs/hermes-sales-delivery-discovery.md`.

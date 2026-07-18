@@ -1,14 +1,15 @@
 {
-  "artifact": "dos-amigos-ops-s1-6-1-sales-import",
+  "artifact": "dos-amigos-ops-s1-6-1a-sales-automation",
   "created": "2026-07-18",
   "scope": [
     "S1.1 repository scaffold",
     "S1.2 service and database skeleton",
     "S1.3 raw-ingestion model skeleton",
     "S1.5 read-only iikoServer REST adapter",
-    "S1.6.1 read-only iikoServer OLAP sales import"
+    "S1.6.1 read-only iikoServer OLAP sales import",
+    "S1.6.1a automatic sales import and Hermes outbox"
   ],
-  "file_count": 76,
+  "file_count": 89,
   "validation": {
     "pyproject": "parsed",
     "python_syntax": "covered by ruff and pytest",

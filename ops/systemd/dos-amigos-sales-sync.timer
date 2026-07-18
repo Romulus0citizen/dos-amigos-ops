@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Dos Amigos iiko sales automation hourly
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=300
+Unit=dos-amigos-sales-sync.service
+
+[Install]
+WantedBy=timers.target
