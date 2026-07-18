@@ -3,6 +3,7 @@ from typing import Any
 from uuid import uuid4
 
 from integrations.iiko.client import IikoClient
+from integrations.iiko.fixtures import synthetic_olap_sales_payload
 from integrations.iiko.schemas import (
     AuthResult,
     IikoMode,
@@ -108,7 +109,22 @@ class MockIikoAdapter(IikoClient):
         self,
         parameters: Mapping[str, Any] | None = None,
     ) -> RawResult:
-        return self._not_implemented("orders_or_sales")
+        parameters = parameters or {}
+        business_date_value = parameters.get("business_date") or parameters.get("date_from")
+        business_date = str(business_date_value or "2026-07-16")
+        organization_id = str(parameters.get("organization_id") or self.organization_ref)
+        payload = synthetic_olap_sales_payload(
+            organization_id=organization_id,
+            business_date=business_date,
+        )
+        return RawResult.proven(
+            adapter=self.adapter_name,
+            mode=self.mode,
+            dataset="orders_or_sales",
+            trace_id=self._trace_id(),
+            payload=payload,
+            records_count=sum(len(report["data"]) for report in payload.values()),
+        )
 
     async def fetch_payments(
         self,

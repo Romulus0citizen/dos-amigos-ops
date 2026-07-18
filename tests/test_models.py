@@ -1,6 +1,6 @@
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
-from apps.core.app.models import IntegrationCapability
+from apps.core.app.models import IikoSalesDaily, IntegrationCapability
 from apps.core.app.models.base import Base
 
 
@@ -10,6 +10,10 @@ def test_required_integration_tables_are_registered() -> None:
         "integration_capabilities",
         "sync_runs",
         "raw_payloads",
+        "iiko_sales_sync_runs",
+        "iiko_sales_daily",
+        "iiko_sales_daily_payments",
+        "iiko_sales_daily_products",
     }.issubset(Base.metadata.tables)
 
 
@@ -76,3 +80,39 @@ def test_raw_payload_idempotency_indexes() -> None:
 
     assert indexes["uq_raw_payload_with_external_reference"].unique
     assert indexes["uq_raw_payload_without_external_reference"].unique
+
+
+def test_sales_daily_columns_and_uniqueness() -> None:
+    table = Base.metadata.tables["iiko_sales_daily"]
+
+    assert IikoSalesDaily.__tablename__ == "iiko_sales_daily"
+    assert {
+        "organization_id",
+        "business_date",
+        "gross_sales",
+        "reported_discounts",
+        "reported_increases",
+        "net_sales",
+        "unexplained_adjustment",
+        "refunds",
+        "checks_count",
+        "average_check",
+        "result_status",
+        "reconciliation_error_code",
+        "source_checksum",
+    }.issubset(table.columns.keys())
+    assert any(
+        constraint.name == "uq_iiko_sales_daily_org_date" for constraint in table.constraints
+    )
+
+
+def test_sales_payment_and_product_deterministic_keys() -> None:
+    payment_constraints = Base.metadata.tables["iiko_sales_daily_payments"].constraints
+    product_constraints = Base.metadata.tables["iiko_sales_daily_products"].constraints
+
+    assert any(
+        constraint.name == "uq_iiko_sales_daily_payment_key" for constraint in payment_constraints
+    )
+    assert any(
+        constraint.name == "uq_iiko_sales_daily_product_key" for constraint in product_constraints
+    )

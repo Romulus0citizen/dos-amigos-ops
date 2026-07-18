@@ -1,3 +1,4 @@
+import json
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -12,6 +13,7 @@ class Settings(BaseSettings):
     app_env: str = "development"
     log_level: str = "INFO"
     api_port: int = 8000
+    business_timezone: str = "Etc/UTC"
 
     database_url: str = (
         "postgresql+psycopg://dos_amigos:change-me-locally@localhost:5432/dos_amigos"
@@ -28,6 +30,7 @@ class Settings(BaseSettings):
     iiko_connect_timeout_seconds: int = 10
     iiko_read_timeout_seconds: int = 30
     iiko_max_retries: int = 3
+    iiko_payment_category_map_json: str = "{}"
 
     def iiko_auth_configuration(self) -> AuthConfiguration:
         return AuthConfiguration(
@@ -48,6 +51,12 @@ class Settings(BaseSettings):
             read_timeout_seconds=self.iiko_read_timeout_seconds,
             max_retries=self.iiko_max_retries,
         )
+
+    def iiko_payment_category_map(self) -> dict[str, str]:
+        parsed = json.loads(self.iiko_payment_category_map_json or "{}")
+        if not isinstance(parsed, dict):
+            raise ValueError("IIKO_PAYMENT_CATEGORY_MAP_JSON must be a JSON object")
+        return {str(key): str(value) for key, value in parsed.items()}
 
     model_config = SettingsConfigDict(
         env_file=".env",

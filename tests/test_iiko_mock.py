@@ -40,3 +40,14 @@ async def test_mock_unsupported_dataset_is_blocked_not_fabricated() -> None:
     assert result.status is ResultStatus.BLOCKED
     assert result.payload is None
     assert result.error_code == "capability_blocked"
+
+
+@pytest.mark.asyncio
+async def test_mock_sales_dataset_returns_synthetic_olap_fixture() -> None:
+    adapter = MockIikoAdapter(organization_ref="department-1")
+
+    result = await adapter.fetch_orders_or_sales({"business_date": "2026-07-16"})
+
+    assert result.status is ResultStatus.PROVEN
+    assert result.dataset == "orders_or_sales"
+    assert result.payload["daily"]["data"][0]["Department.Id"] == "department-1"

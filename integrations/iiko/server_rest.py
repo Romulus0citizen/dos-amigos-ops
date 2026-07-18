@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Mapping
+from datetime import date
+from decimal import Decimal
 from typing import Any
 from urllib.parse import urlparse
 from uuid import UUID, uuid4
@@ -11,6 +14,7 @@ import httpx
 
 from integrations.iiko.auth import AuthConfiguration
 from integrations.iiko.client import IikoClient
+from integrations.iiko.sales import calculate_sales_checksum
 from integrations.iiko.schemas import (
     AuthKind,
     AuthResult,
@@ -21,6 +25,46 @@ from integrations.iiko.schemas import (
 )
 
 UNSUPPORTED_DATASET_REASON = "dataset_not_implemented_for_server_rest_api"
+RETRYABLE_READ_STATUSES = {429, 502, 503, 504}
+
+DAILY_GROUP_FIELDS = [
+    "OpenDate.Typed",
+    "Department.Id",
+    "Storned",
+    "OrderDeleted",
+]
+DAILY_AGGREGATE_FIELDS = [
+    "DishSumInt",
+    "DishDiscountSumInt",
+    "DiscountSum",
+    "IncreaseSum",
+    "DishReturnSum",
+    "UniqOrderId.OrdersCount",
+]
+PAYMENT_GROUP_FIELDS = [
+    "OpenDate.Typed",
+    "Department.Id",
+    "PayTypes.Group",
+    "PayTypes.GUID",
+    "PayTypes",
+    "Storned",
+    "OrderDeleted",
+]
+PRODUCT_GROUP_FIELDS = [
+    "OpenDate.Typed",
+    "Department.Id",
+    "DishId",
+    "DishName",
+    "DishSize.Id",
+    "Storned",
+    "OrderDeleted",
+]
+PRODUCT_AGGREGATE_FIELDS = [
+    "DishAmountInt",
+    "DishSumInt",
+    "DishDiscountSumInt",
+    "DishReturnSum",
+]
 
 
 class EndpointUnreachableError(Exception):
@@ -106,6 +150,30 @@ class ServerRestIikoClient(IikoClient):
             except httpx.RequestError as exc:
                 if attempt >= retries:
                     raise EndpointUnreachableError from exc
+        raise EndpointUnreachableError
+
+    async def _post_json(
+        self,
+        path: str,
+        *,
+        params: Mapping[str, str],
+        json_payload: Mapping[str, Any],
+        retries: int = 0,
+        retry_statuses: set[int] | None = None,
+    ) -> httpx.Response:
+        retry_statuses = retry_statuses or set()
+        attempts = max(0, retries) + 1
+        for attempt in range(attempts):
+            try:
+                response = await self._client.post(path, params=params, json=json_payload)
+            except httpx.RequestError as exc:
+                if attempt >= attempts - 1:
+                    raise EndpointUnreachableError from exc
+                continue
+
+            if response.status_code not in retry_statuses or attempt >= attempts - 1:
+                return response
+
         raise EndpointUnreachableError
 
     def _auth_result(
@@ -391,7 +459,190 @@ class ServerRestIikoClient(IikoClient):
         self,
         parameters: Mapping[str, Any] | None = None,
     ) -> RawResult:
-        return self._blocked("orders_or_sales")
+        parameters = parameters or {}
+        organization_id = str(parameters.get("organization_id") or self.organization_ref or "")
+        if not organization_id:
+            return RawResult.blocked(
+                adapter=self.adapter_name,
+                mode=self.mode,
+                dataset="orders_or_sales",
+                trace_id=self._trace_id(),
+                reason="organization_id_required_for_iiko_sales",
+            )
+
+        try:
+            date_from = self._date_parameter(parameters, "date_from", "business_date")
+            date_to = self._date_parameter(parameters, "date_to", "business_date")
+        except ValueError as exc:
+            return RawResult.blocked(
+                adapter=self.adapter_name,
+                mode=self.mode,
+                dataset="orders_or_sales",
+                trace_id=self._trace_id(),
+                reason=str(exc),
+            )
+        authentication = await self.authenticate()
+        if not authentication.authenticated or self._token is None:
+            return self._raw_auth_failure("orders_or_sales", authentication)
+
+        reports: dict[str, Any] = {}
+        for report_name, group_fields, aggregate_fields in (
+            ("daily", DAILY_GROUP_FIELDS, DAILY_AGGREGATE_FIELDS),
+            ("payments", PAYMENT_GROUP_FIELDS, DAILY_AGGREGATE_FIELDS),
+            ("products", PRODUCT_GROUP_FIELDS, PRODUCT_AGGREGATE_FIELDS),
+        ):
+            report = await self._fetch_olap_sales_report(
+                report_name=report_name,
+                organization_id=organization_id,
+                date_from=date_from,
+                date_to=date_to,
+                group_fields=group_fields,
+                aggregate_fields=aggregate_fields,
+            )
+            if isinstance(report, RawResult):
+                return report
+            reports[report_name] = report
+
+        return RawResult.proven(
+            adapter=self.adapter_name,
+            mode=self.mode,
+            dataset="orders_or_sales",
+            trace_id=self._trace_id(),
+            payload=reports,
+            records_count=sum(len(report.get("data", [])) for report in reports.values()),
+            details={
+                "writes_enabled": False,
+                "report_type": "SALES",
+                "source_checksum": calculate_sales_checksum(reports),
+            },
+        )
+
+    @staticmethod
+    def _date_parameter(parameters: Mapping[str, Any], primary: str, fallback: str) -> str:
+        value = parameters.get(primary) or parameters.get(fallback)
+        if isinstance(value, date):
+            return value.isoformat()
+        if isinstance(value, str) and value:
+            return value
+        raise ValueError(f"{primary} or {fallback} is required")
+
+    def _sales_olap_body(
+        self,
+        *,
+        organization_id: str,
+        date_from: str,
+        date_to: str,
+        group_fields: list[str],
+        aggregate_fields: list[str],
+    ) -> dict[str, Any]:
+        return {
+            "reportType": "SALES",
+            "groupByRowFields": group_fields,
+            "aggregateFields": aggregate_fields,
+            "filters": {
+                "OpenDate.Typed": {
+                    "filterType": "DateRange",
+                    "periodType": "CUSTOM",
+                    "from": date_from,
+                    "to": date_to,
+                    "includeLow": True,
+                    "includeHigh": True,
+                },
+                "Department.Id": {
+                    "filterType": "IncludeValues",
+                    "values": [organization_id],
+                },
+            },
+        }
+
+    async def _fetch_olap_sales_report(
+        self,
+        *,
+        report_name: str,
+        organization_id: str,
+        date_from: str,
+        date_to: str,
+        group_fields: list[str],
+        aggregate_fields: list[str],
+    ) -> dict[str, Any] | RawResult:
+        trace_id = self._trace_id()
+        try:
+            response = await self._post_json(
+                "api/v2/reports/olap",
+                params={"key": self._token or ""},
+                json_payload=self._sales_olap_body(
+                    organization_id=organization_id,
+                    date_from=date_from,
+                    date_to=date_to,
+                    group_fields=group_fields,
+                    aggregate_fields=aggregate_fields,
+                ),
+                retries=self.max_retries,
+                retry_statuses=RETRYABLE_READ_STATUSES,
+            )
+        except EndpointUnreachableError:
+            return RawResult(
+                status=ResultStatus.UNKNOWN,
+                adapter=self.adapter_name,
+                mode=self.mode,
+                dataset="orders_or_sales",
+                trace_id=trace_id,
+                details=self._safe_details(),
+                error_code="endpoint_unreachable",
+                error_message_sanitized="iiko_server_sales_endpoint_unreachable",
+            )
+
+        if response.status_code in {400, 401, 403, 404}:
+            if response.status_code == 401:
+                self._token = None
+            return RawResult(
+                status=ResultStatus.BLOCKED,
+                adapter=self.adapter_name,
+                mode=self.mode,
+                dataset="orders_or_sales",
+                trace_id=trace_id,
+                details={"writes_enabled": False, "report_name": report_name},
+                error_code=f"sales_olap_http_{response.status_code}",
+                error_message_sanitized="iiko_server_sales_olap_request_blocked",
+            )
+        if response.status_code != 200:
+            return RawResult(
+                status=ResultStatus.UNKNOWN,
+                adapter=self.adapter_name,
+                mode=self.mode,
+                dataset="orders_or_sales",
+                trace_id=trace_id,
+                details={"writes_enabled": False, "report_name": report_name},
+                error_code=f"sales_olap_http_{response.status_code}",
+                error_message_sanitized="iiko_server_sales_olap_response_unexpected",
+            )
+
+        try:
+            parsed = json.loads(response.text, parse_float=Decimal, parse_int=Decimal)
+        except json.JSONDecodeError:
+            return RawResult(
+                status=ResultStatus.UNKNOWN,
+                adapter=self.adapter_name,
+                mode=self.mode,
+                dataset="orders_or_sales",
+                trace_id=trace_id,
+                details={"writes_enabled": False, "report_name": report_name},
+                error_code="sales_olap_json_invalid",
+                error_message_sanitized="iiko_server_sales_olap_json_invalid",
+            )
+
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("data"), list):
+            return RawResult(
+                status=ResultStatus.UNKNOWN,
+                adapter=self.adapter_name,
+                mode=self.mode,
+                dataset="orders_or_sales",
+                trace_id=trace_id,
+                details={"writes_enabled": False, "report_name": report_name},
+                error_code="sales_olap_structure_unknown",
+                error_message_sanitized="iiko_server_sales_olap_structure_unknown",
+            )
+        return parsed
 
     async def fetch_payments(
         self,
