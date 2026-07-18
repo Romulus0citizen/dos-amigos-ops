@@ -41,7 +41,7 @@ class ServerRestIikoClient(IikoClient):
         connect_timeout_seconds: int = 10,
         read_timeout_seconds: int = 30,
         max_retries: int = 3,
-        transport: httpx.AsyncBaseTransport | httpx.BaseTransport | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.base_url = self._normalize_base_url(base_url)
         self.organization_ref = organization_ref or None
