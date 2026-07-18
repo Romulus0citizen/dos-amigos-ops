@@ -1,15 +1,17 @@
 {
-  "artifact": "dos-amigos-ops-s1.1-scaffold",
-  "created": "2026-07-16",
+  "artifact": "dos-amigos-ops-s1-6-1-sales-import",
+  "created": "2026-07-18",
   "scope": [
     "S1.1 repository scaffold",
     "S1.2 service and database skeleton",
-    "S1.3 raw-ingestion model skeleton"
+    "S1.3 raw-ingestion model skeleton",
+    "S1.5 read-only iikoServer REST adapter",
+    "S1.6.1 read-only iikoServer OLAP sales import"
   ],
-  "file_count": 69,
+  "file_count": 76,
   "validation": {
     "pyproject": "parsed",
-    "python_syntax": "passed for 25 files",
-    "third_party_tests": "run after dependency installation"
+    "python_syntax": "covered by ruff and pytest",
+    "third_party_tests": "run in Python 3.12 environment"
   }
 }

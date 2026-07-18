@@ -6,6 +6,13 @@ from integrations.iiko.client import (
     build_iiko_client,
 )
 from integrations.iiko.mock import MockIikoAdapter
+from integrations.iiko.sales import (
+    NormalizedSalesReport,
+    PaymentCategory,
+    SalesDailySummary,
+    SalesPaymentSummary,
+    SalesProductSummary,
+)
 from integrations.iiko.schemas import (
     AuthKind,
     AuthResult,
@@ -25,9 +32,14 @@ __all__ = [
     "IikoClient",
     "IikoMode",
     "MockIikoAdapter",
+    "NormalizedSalesReport",
+    "PaymentCategory",
     "ProbeResult",
     "RawResult",
     "ResultStatus",
+    "SalesDailySummary",
+    "SalesPaymentSummary",
+    "SalesProductSummary",
     "ServerRestIikoClient",
     "build_iiko_client",
 ]

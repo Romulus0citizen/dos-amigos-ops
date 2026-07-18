@@ -394,7 +394,6 @@ async def test_unsupported_server_rest_datasets_are_explicitly_blocked() -> None
         (client.list_terminal_groups, ("department-1",)),
         (client.fetch_nomenclature, ("department-1",)),
         (client.fetch_menu, ("department-1",)),
-        (client.fetch_orders_or_sales, ()),
         (client.fetch_payments, ()),
         (client.fetch_inventory, ()),
         (client.fetch_writeoffs, ()),

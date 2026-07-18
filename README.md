@@ -82,3 +82,25 @@ IIKO_CONNECT_TIMEOUT_SECONDS=10
 IIKO_READ_TIMEOUT_SECONDS=30
 IIKO_MAX_RETRIES=3
 ```
+
+## iiko Sales Import
+
+S1.6.1 uses iikoServer OLAP `SALES` reports as the read-only sales source. Import a closed day:
+
+```bash
+python -m apps.core.app.cli.iiko_sync_sales --date 2026-07-16
+```
+
+Dry-run:
+
+```bash
+python -m apps.core.app.cli.iiko_sync_sales --date 2026-07-16 --dry-run
+```
+
+Daily reports are served from PostgreSQL only:
+
+```bash
+curl "http://localhost:8000/api/v1/reports/sales/daily?date=2026-07-16&organization_id=<organization-id>"
+```
+
+See `docs/iiko-sales-discovery.md` and `docs/s1-6-1-sales-import-runbook.md`.
