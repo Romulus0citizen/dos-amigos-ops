@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     sales_retry_base_seconds: int = 30
     sales_outbox_enabled: bool = True
     hermes_delivery_mode: str = "disabled"
+    report_outbox_internal_token: str = ""
 
     def iiko_auth_configuration(self) -> AuthConfiguration:
         return AuthConfiguration(

@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
@@ -15,6 +15,8 @@ from apps.core.app.models.sales import (
     HermesReportOutbox,
     IikoSalesAutomationRun,
     IikoSalesDaily,
+    IikoSalesDailyPayment,
+    IikoSalesDailyProduct,
 )
 from apps.core.app.repositories.iiko_sales import IikoSalesRepository
 from apps.core.app.services.iiko_sales import IikoSalesSyncService
@@ -24,6 +26,7 @@ from integrations.iiko.schemas import ResultStatus
 logger = structlog.get_logger(__name__)
 
 REPORT_TYPE_SALES_DAILY = "sales_daily"
+NO_COMPARISON_DATA = "нет данных для сравнения"
 SALES_AUTOMATION_LOCK_KEY = (
     int.from_bytes(
         hashlib.sha256(b"dos-amigos:iiko-sales-automation").digest()[:8],
@@ -200,13 +203,132 @@ def money(value: Decimal | None) -> str:
     return format(value or Decimal("0"), "f")
 
 
+def _human_decimal(value: Decimal | None, *, places: int) -> str:
+    quant = Decimal("1").scaleb(-places)
+    rounded = (value or Decimal("0")).quantize(quant, rounding=ROUND_HALF_UP)
+    sign = "-" if rounded < 0 else ""
+    rendered = format(abs(rounded), f".{places}f")
+    whole, _, fraction = rendered.partition(".")
+    grouped = f"{int(whole):,}".replace(",", " ")
+    fraction = fraction.rstrip("0")
+    if fraction:
+        return f"{sign}{grouped},{fraction}"
+    return f"{sign}{grouped}"
+
+
+def _human_money(value: Decimal | None) -> str:
+    return f"{_human_decimal(value, places=2)} ₽"
+
+
+def _human_quantity(value: Decimal | None) -> str:
+    return f"{_human_decimal(value, places=4)} шт."
+
+
+def _comparison_percent(
+    current: Decimal,
+    previous: IikoSalesDaily | None,
+) -> Decimal | None:
+    if previous is None or previous.net_sales == 0:
+        return None
+    return ((current - previous.net_sales) / previous.net_sales * Decimal("100")).quantize(
+        Decimal("0.1"),
+        rounding=ROUND_HALF_UP,
+    )
+
+
+def _sales_comparison(
+    current: Decimal,
+    previous: IikoSalesDaily | None,
+) -> str:
+    percent = _comparison_percent(current, previous)
+    if percent is None:
+        return NO_COMPARISON_DATA
+    sign = "+" if percent > 0 else ""
+    return f"{sign}{_human_decimal(percent, places=1)} %"
+
+
+def _payment_totals(payments: list[IikoSalesDailyPayment]) -> dict[str, Decimal]:
+    totals = {
+        "cash": Decimal("0"),
+        "card": Decimal("0"),
+        "other": Decimal("0"),
+        "unknown": Decimal("0"),
+    }
+    for payment in payments:
+        category = payment.payment_category
+        if category not in totals:
+            category = "other"
+        totals[category] += payment.sales_amount
+    return totals
+
+
+def _daily_coo_facts(
+    daily: IikoSalesDaily,
+    products: list[IikoSalesDailyProduct],
+    previous_day: IikoSalesDaily | None,
+    previous_weekday: IikoSalesDaily | None,
+) -> list[str]:
+    facts: list[str] = []
+    for label, previous in (
+        ("к предыдущему дню", previous_day),
+        ("к тому же дню прошлой недели", previous_weekday),
+    ):
+        percent = _comparison_percent(daily.net_sales, previous)
+        if percent is None:
+            continue
+        abs_percent = f"{_human_decimal(abs(percent), places=1)} %"
+        if percent > 0:
+            facts.append(f"Выручка выросла {label} на {abs_percent}.")
+        elif percent < 0:
+            facts.append(f"Выручка снизилась {label} на {abs_percent}.")
+        else:
+            facts.append(f"Выручка не изменилась {label}.")
+    if products:
+        leader = products[0]
+        facts.append(
+            f"Лидер продаж: {leader.product_name_snapshot} — "
+            f"{_human_quantity(leader.quantity)} / {_human_money(leader.net_sales)}."
+        )
+    if daily.gross_sales > 0 and daily.reported_discounts > 0:
+        discount_share = (daily.reported_discounts / daily.gross_sales * Decimal("100")).quantize(
+            Decimal("0.1"),
+            rounding=ROUND_HALF_UP,
+        )
+        facts.append(
+            f"Скидки составили {_human_decimal(discount_share, places=1)} % от валовой выручки."
+        )
+    return facts[:3]
+
+
+def _daily_coo_attention(
+    daily: IikoSalesDaily,
+    payments: list[IikoSalesDailyPayment],
+) -> list[str]:
+    attention: list[str] = []
+    if daily.reconciliation_error_code == "IIKO_DISCOUNT_RECONCILIATION_MISMATCH":
+        attention.append(
+            "В iiko обнаружено расхождение между суммой скидок и итоговой выручкой. "
+            "Продажи загружены, но показатель скидок требует сверки."
+        )
+    else:
+        if daily.result_status == ResultStatus.PARTIAL.value:
+            attention.append(
+                "Часть показателей не удалось подтвердить полностью; требуется сверка с iiko."
+            )
+        if daily.reconciliation_error_code:
+            attention.append("В iiko есть расхождение, требующее ручной сверки.")
+    if any(payment.payment_category == "unknown" for payment in payments):
+        attention.append("Есть оплаты без подтверждённой категории.")
+    return attention or ["нет"]
+
+
 def build_sales_daily_hermes_payload(
     session: Session,
     organization_id: str,
     business_date: date,
     *,
     json_top_products: int = 10,
-    markdown_top_products: int = 5,
+    markdown_top_products: int = 3,
 ) -> HermesPayload:
     repository = IikoSalesRepository(session)
     daily = repository.get_daily(organization_id, business_date)
@@ -219,11 +341,15 @@ def build_sales_daily_hermes_payload(
         business_date,
         limit=json_top_products,
     )
+    previous_day = repository.get_daily(organization_id, business_date - timedelta(days=1))
+    previous_weekday = repository.get_daily(organization_id, business_date - timedelta(days=7))
+    previous_day_comparison = _sales_comparison(daily.net_sales, previous_day)
+    previous_weekday_comparison = _sales_comparison(daily.net_sales, previous_weekday)
     warnings: list[str] = []
     if daily.reconciliation_error_code:
-        warnings.append("discount_reconciliation_mismatch")
+        warnings.append(daily.reconciliation_error_code)
     if daily.result_status == ResultStatus.PARTIAL.value:
-        warnings.append("partial_refund_capability")
+        warnings.append("partial")
     if any(payment.payment_category == "unknown" for payment in payments):
         warnings.append("unknown_payment_category")
 
@@ -263,45 +389,44 @@ def build_sales_daily_hermes_payload(
         "top_products": top_products,
         "source_checksum": daily.source_checksum,
         "warnings": warnings,
+        "comparison_previous_day": previous_day_comparison,
+        "comparison_same_weekday_previous_week": previous_weekday_comparison,
     }
+    totals = _payment_totals(payments)
+    other_total = totals["other"] + totals["unknown"]
     markdown_lines = [
-        f"Продажи Dos Amigos - {business_date.strftime('%d.%m.%Y')}",
+        f"Dos Amigos — итоги {business_date.strftime('%d.%m.%Y')}",
         "",
-        f"Выручка: {money(daily.net_sales)}",
-        f"Чеки: {daily.checks_count}",
-        f"Средний чек: {money(daily.average_check)}",
-        f"Скидки: {money(daily.reported_discounts)}",
-        f"Возвраты: {money(daily.refunds)}",
+        f"Выручка: {_human_money(daily.net_sales)}",
+        f"К предыдущему дню: {previous_day_comparison}",
+        f"К тому же дню прошлой недели: {previous_weekday_comparison}",
+        "",
+        f"Чеков: {daily.checks_count}",
+        f"Средний чек: {_human_money(daily.average_check)}",
+        f"Скидки: {_human_money(daily.reported_discounts)}",
         "",
         "Оплаты:",
+        f"— наличные: {_human_money(totals['cash'])}",
+        f"— карта: {_human_money(totals['card'])}",
+        f"— другие: {_human_money(other_total)}",
+        "",
+        "Топ продаж:",
     ]
-    totals = {
-        "cash": Decimal("0"),
-        "card": Decimal("0"),
-        "other": Decimal("0"),
-        "unknown": Decimal("0"),
-    }
-    for payment in payments:
-        totals[payment.payment_category] = (
-            totals.get(payment.payment_category, Decimal("0")) + payment.sales_amount
-        )
-    for category, label in (
-        ("cash", "наличные"),
-        ("card", "карта"),
-        ("other", "прочие"),
-        ("unknown", "unknown"),
-    ):
-        markdown_lines.append(f"- {label}: {money(totals[category])}")
-    markdown_lines.extend(["", "Топ-5 позиций:"])
     for index, product in enumerate(products[:markdown_top_products], start=1):
         markdown_lines.append(
-            f"{index}. {product.product_name_snapshot} - "
-            f"{format(product.quantity, 'f')} / {money(product.net_sales)}"
+            f"{index}. {product.product_name_snapshot} — "
+            f"{_human_quantity(product.quantity)} / {_human_money(product.net_sales)}"
         )
-    if warnings:
-        markdown_lines.extend(["", "Предупреждения:"])
-        for warning in warnings:
-            markdown_lines.append(f"- {warning}")
+    if not products:
+        markdown_lines.append("— нет данных")
+    markdown_lines.extend(["", "Факты:"])
+    for fact in _daily_coo_facts(daily, products, previous_day, previous_weekday):
+        markdown_lines.append(f"— {fact}")
+    if len(markdown_lines) >= 2 and markdown_lines[-1] == "Факты:":
+        markdown_lines.append("— нет новых числовых наблюдений.")
+    markdown_lines.extend(["", "Требует внимания:"])
+    for item in _daily_coo_attention(daily, payments):
+        markdown_lines.append(f"— {item}")
     idempotency_key = (
         f"{REPORT_TYPE_SALES_DAILY}:{organization_id}:"
         f"{business_date.isoformat()}:{daily.source_checksum}"
@@ -557,6 +682,15 @@ class IikoSalesAutomationService:
             )
         )
         if existing:
+            if existing.delivery_status != "delivered" and (
+                existing.payload_json != payload.payload_json
+                or existing.payload_markdown != payload.payload_markdown
+            ):
+                existing.payload_json = payload.payload_json
+                existing.payload_markdown = payload.payload_markdown
+                existing.source_checksum = payload.source_checksum
+                existing.updated_at = datetime.now(UTC)
+                self.session.commit()
             return SalesAutomationResult(
                 status="unchanged",
                 trigger_type="outbox",
