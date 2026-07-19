@@ -25,3 +25,18 @@ def test_sales_sync_script_uses_strict_mode_and_flock() -> None:
     assert "flock -n" in script
     assert "iiko_sales_automation" in script
     assert ".env" not in script
+
+
+def test_telegram_report_script_uses_bot_environment_defaults_and_flock() -> None:
+    script = (ROOT / "ops/bin/send-telegram-reports.sh").read_text(encoding="utf-8")
+
+    assert "set -Eeuo pipefail" in script
+    assert 'BOT_DIR="${DOS_AMIGOS_BOT_DIR:-/opt/hermes-bots/dos-amigos}"' in script
+    assert 'PYTHON_BIN="${DOS_AMIGOS_OPS_PYTHON:-${BOT_DIR}/.venv/bin/python}"' in script
+    assert 'BOT_ENV_FILE="${BOT_ENV_FILE:-${BOT_DIR}/.env}"' in script
+    assert (
+        'LOCK_FILE="${DOS_AMIGOS_TELEGRAM_REPORT_LOCK_FILE:-/tmp/dos-amigos-telegram-report.lock}"'
+        in script
+    )
+    assert "flock -n" in script
+    assert "cat " not in script

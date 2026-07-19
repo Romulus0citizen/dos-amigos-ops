@@ -306,6 +306,44 @@ def test_outbox_idempotency_supersedes_pending_but_keeps_delivered() -> None:
         assert statuses == ["delivered", "pending"]
 
 
+def test_rebuild_outbox_updates_existing_payload_without_duplicate() -> None:
+    SessionLocal = session_factory()
+    with SessionLocal() as session:
+        business_date = date.fromisoformat(BUSINESS_DATE)
+        persist_sales_day(session, business_date)
+        daily = session.get(
+            IikoSalesDaily,
+            {"organization_id": ORG_ID, "business_date": business_date},
+        )
+        assert daily is not None
+        outbox = HermesReportOutbox(
+            report_type="sales_daily",
+            organization_id=ORG_ID,
+            business_date=business_date,
+            source_checksum=daily.source_checksum,
+            idempotency_key=f"sales_daily:{ORG_ID}:{BUSINESS_DATE}:{daily.source_checksum}",
+            payload_json={"schema_version": "old"},
+            payload_markdown="old payload",
+            delivery_status="pending",
+            delivery_attempts=0,
+            updated_at=datetime(2026, 7, 18, tzinfo=UTC),
+        )
+        session.add(outbox)
+        session.commit()
+        outbox_id = outbox.id
+        service = automation_service(session)
+
+        result = service.rebuild_outbox()
+
+        rows = list(session.scalars(select(HermesReportOutbox)))
+        assert result.outbox_created == 0
+        assert result.outbox_ids == [outbox_id]
+        assert len(rows) == 1
+        assert rows[0].id == outbox_id
+        assert rows[0].payload_markdown != "old payload"
+        assert rows[0].payload_markdown.startswith("Dos Amigos — итоги")
+
+
 def test_hermes_payload_is_deterministic_decimal_string_and_safe() -> None:
     SessionLocal = session_factory()
     with SessionLocal() as session:
