@@ -5,7 +5,9 @@ from apps.core.app.models.integration import (
     SyncRun,
 )
 from apps.core.app.models.sales import (
+    DailyCooReportRun,
     HermesReportOutbox,
+    HermesReportRecipientDelivery,
     IikoSalesAutomationRun,
     IikoSalesDaily,
     IikoSalesDailyPayment,
@@ -14,7 +16,9 @@ from apps.core.app.models.sales import (
 )
 
 __all__ = [
+    "DailyCooReportRun",
     "HermesReportOutbox",
+    "HermesReportRecipientDelivery",
     "IikoSalesAutomationRun",
     "IikoSalesDaily",
     "IikoSalesDailyPayment",

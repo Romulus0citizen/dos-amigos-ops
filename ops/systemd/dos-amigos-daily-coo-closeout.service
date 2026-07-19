@@ -1,0 +1,19 @@
+[Unit]
+Description=Dos Amigos daily COO closeout report
+Wants=network-online.target
+After=network-online.target docker.service
+StartLimitIntervalSec=3600
+StartLimitBurst=5
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/dos-amigos-core
+ExecStart=/opt/dos-amigos-core/ops/bin/run-daily-coo-report.sh --closeout --json
+Restart=on-failure
+RestartSec=60
+TimeoutStartSec=7200
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

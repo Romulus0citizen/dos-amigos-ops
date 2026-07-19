@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     app_env: str = "development"
     log_level: str = "INFO"
     api_port: int = 8000
-    business_timezone: str = "Etc/UTC"
+    business_timezone: str = "Asia/Yekaterinburg"
 
     database_url: str = (
         "postgresql+psycopg://dos_amigos:change-me-locally@localhost:5432/dos_amigos"

@@ -5,14 +5,14 @@ import secrets
 from datetime import UTC, date, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from apps.core.app.core.config import get_settings
 from apps.core.app.db.session import get_db
-from apps.core.app.models.sales import HermesReportOutbox
+from apps.core.app.models.sales import HermesReportOutbox, HermesReportRecipientDelivery
 
 router = APIRouter()
 
@@ -20,6 +20,7 @@ _AUTH_RE = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE)
 _TOKEN_ASSIGNMENT_RE = re.compile(r"\b(token|bot_token|authorization)=\S+", re.IGNORECASE)
 _NUMERIC_ID_RE = re.compile(r"\b\d+\b")
 _SAFE_ERROR_LIMIT = 500
+_RECIPIENT_KEY_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class PendingReportResponse(BaseModel):
@@ -40,6 +41,27 @@ class FailedReportRequest(BaseModel):
     error_message: str | None = Field(default=None, max_length=2000)
 
 
+class RegisterRecipientsRequest(BaseModel):
+    recipient_keys: list[str] = Field(min_length=1, max_length=100)
+
+    @field_validator("recipient_keys")
+    @classmethod
+    def validate_recipient_keys(cls, value: list[str]) -> list[str]:
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for recipient_key in value:
+            if not _RECIPIENT_KEY_RE.fullmatch(recipient_key):
+                raise ValueError("recipient_key must be 64 lowercase hex characters")
+            if recipient_key not in seen:
+                seen.add(recipient_key)
+                deduped.append(recipient_key)
+        return deduped
+
+
+class RegisterRecipientsResponse(BaseModel):
+    recipients: dict[str, str]
+
+
 def require_internal_token(
     authorization: Annotated[str | None, Header()] = None,
 ) -> None:
@@ -58,6 +80,21 @@ def _get_outbox_or_404(db: Session, report_id: str) -> HermesReportOutbox:
     return outbox
 
 
+def _get_recipient_or_404(
+    db: Session,
+    report_id: str,
+    recipient_key: str,
+) -> HermesReportRecipientDelivery:
+    delivery = db.scalar(
+        select(HermesReportRecipientDelivery)
+        .where(HermesReportRecipientDelivery.report_id == report_id)
+        .where(HermesReportRecipientDelivery.recipient_key == recipient_key)
+    )
+    if delivery is None:
+        raise HTTPException(status_code=404, detail="recipient delivery not found")
+    return delivery
+
+
 def _safe_error_message(message: str | None) -> str | None:
     if not message:
         return None
@@ -65,6 +102,14 @@ def _safe_error_message(message: str | None) -> str | None:
     redacted = _TOKEN_ASSIGNMENT_RE.sub("[redacted_secret]", redacted)
     redacted = _NUMERIC_ID_RE.sub("[redacted_id]", redacted)
     return redacted[:_SAFE_ERROR_LIMIT]
+
+
+def _status_response(outbox: HermesReportOutbox) -> ReportStatusResponse:
+    return ReportStatusResponse(
+        id=outbox.id,
+        delivery_status=outbox.delivery_status,
+        delivery_attempts=outbox.delivery_attempts,
+    )
 
 
 @router.get(
@@ -121,11 +166,7 @@ def mark_report_delivered(
     outbox.updated_at = now
     db.commit()
     db.refresh(outbox)
-    return ReportStatusResponse(
-        id=outbox.id,
-        delivery_status=outbox.delivery_status,
-        delivery_attempts=outbox.delivery_attempts,
-    )
+    return _status_response(outbox)
 
 
 @router.post(
@@ -149,8 +190,90 @@ def mark_report_failed(
     outbox.updated_at = now
     db.commit()
     db.refresh(outbox)
-    return ReportStatusResponse(
-        id=outbox.id,
-        delivery_status=outbox.delivery_status,
-        delivery_attempts=outbox.delivery_attempts,
-    )
+    return _status_response(outbox)
+
+
+@router.post(
+    "/{report_id}/recipients",
+    response_model=RegisterRecipientsResponse,
+    dependencies=[Depends(require_internal_token)],
+)
+def register_report_recipients(
+    report_id: str,
+    request: RegisterRecipientsRequest,
+    db: Annotated[Session, Depends(get_db)],
+) -> RegisterRecipientsResponse:
+    _get_outbox_or_404(db, report_id)
+    now = datetime.now(UTC)
+    statuses: dict[str, str] = {}
+    for recipient_key in request.recipient_keys:
+        delivery = db.scalar(
+            select(HermesReportRecipientDelivery)
+            .where(HermesReportRecipientDelivery.report_id == report_id)
+            .where(HermesReportRecipientDelivery.recipient_key == recipient_key)
+        )
+        if delivery is None:
+            delivery = HermesReportRecipientDelivery(
+                report_id=report_id,
+                recipient_key=recipient_key,
+                delivery_status="pending",
+                delivery_attempts=0,
+                updated_at=now,
+            )
+            db.add(delivery)
+            db.flush()
+        statuses[recipient_key] = delivery.delivery_status
+    db.commit()
+    return RegisterRecipientsResponse(recipients=statuses)
+
+
+@router.post(
+    "/{report_id}/recipients/{recipient_key}/delivered",
+    response_model=ReportStatusResponse,
+    dependencies=[Depends(require_internal_token)],
+)
+def mark_report_recipient_delivered(
+    report_id: str,
+    recipient_key: Annotated[str, Path(pattern=r"^[0-9a-f]{64}$")],
+    db: Annotated[Session, Depends(get_db)],
+) -> ReportStatusResponse:
+    outbox = _get_outbox_or_404(db, report_id)
+    delivery = _get_recipient_or_404(db, report_id, recipient_key)
+    now = datetime.now(UTC)
+    if delivery.delivery_status != "delivered":
+        delivery.delivery_status = "delivered"
+        delivery.delivery_attempts += 1
+        delivery.delivered_at = now
+        delivery.last_attempt_at = now
+        delivery.error_code = None
+        delivery.error_message_redacted = None
+    delivery.updated_at = now
+    db.commit()
+    db.refresh(outbox)
+    return _status_response(outbox)
+
+
+@router.post(
+    "/{report_id}/recipients/{recipient_key}/failed",
+    response_model=ReportStatusResponse,
+    dependencies=[Depends(require_internal_token)],
+)
+def mark_report_recipient_failed(
+    report_id: str,
+    recipient_key: Annotated[str, Path(pattern=r"^[0-9a-f]{64}$")],
+    request: FailedReportRequest,
+    db: Annotated[Session, Depends(get_db)],
+) -> ReportStatusResponse:
+    outbox = _get_outbox_or_404(db, report_id)
+    delivery = _get_recipient_or_404(db, report_id, recipient_key)
+    now = datetime.now(UTC)
+    if delivery.delivery_status != "delivered":
+        delivery.delivery_status = "failed"
+        delivery.delivery_attempts += 1
+        delivery.last_attempt_at = now
+        delivery.error_code = request.error_code or "telegram_delivery_failed"
+        delivery.error_message_redacted = _safe_error_message(request.error_message)
+    delivery.updated_at = now
+    db.commit()
+    db.refresh(outbox)
+    return _status_response(outbox)

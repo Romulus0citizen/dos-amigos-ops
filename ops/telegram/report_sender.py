@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -20,6 +22,7 @@ DEFAULT_BOT_DIR = "/opt/hermes-bots/dos-amigos"
 DEFAULT_CORE_URL = "http://127.0.0.1:8090"
 DEFAULT_LIMIT = 20
 TELEGRAM_MESSAGE_LIMIT = 4096
+MIN_RECIPIENT_KEY_SECRET_LENGTH = 32
 
 _AUTH_RE = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE)
 _TOKEN_ASSIGNMENT_RE = re.compile(r"\b(token|bot_token|authorization)=\S+", re.IGNORECASE)
@@ -46,6 +49,7 @@ class ReportOutboxItem:
 @dataclass(frozen=True)
 class ReportSenderConfig:
     allowed_ids: list[str]
+    recipient_key_secret: str
     business_date: date | None = None
     dry_run: bool = False
     retry_failed: bool = False
@@ -89,6 +93,27 @@ class ReportOutboxCoreClient(Protocol):
         self,
         report_id: str,
         *,
+        error_code: str,
+        error_message: str,
+    ) -> None:
+        raise NotImplementedError
+
+    async def register_recipients(
+        self,
+        report_id: str,
+        *,
+        recipient_keys: list[str],
+    ) -> dict[str, str]:
+        raise NotImplementedError
+
+    async def mark_recipient_delivered(self, report_id: str, *, recipient_key: str) -> None:
+        raise NotImplementedError
+
+    async def mark_recipient_failed(
+        self,
+        report_id: str,
+        *,
+        recipient_key: str,
         error_code: str,
         error_message: str,
     ) -> None:
@@ -140,6 +165,45 @@ class HttpReportOutboxClient:
         await self._request(
             "POST",
             f"/api/v1/internal/report-outbox/{report_id}/failed",
+            body={
+                "error_code": error_code,
+                "error_message": error_message,
+            },
+        )
+
+    async def register_recipients(
+        self,
+        report_id: str,
+        *,
+        recipient_keys: list[str],
+    ) -> dict[str, str]:
+        data = await self._request(
+            "POST",
+            f"/api/v1/internal/report-outbox/{report_id}/recipients",
+            body={"recipient_keys": recipient_keys},
+        )
+        if not isinstance(data, dict) or not isinstance(data.get("recipients"), dict):
+            raise RuntimeError("core API returned unexpected recipient response")
+        recipients = cast(dict[object, object], data["recipients"])
+        return {str(key): str(value) for key, value in recipients.items()}
+
+    async def mark_recipient_delivered(self, report_id: str, *, recipient_key: str) -> None:
+        await self._request(
+            "POST",
+            f"/api/v1/internal/report-outbox/{report_id}/recipients/{recipient_key}/delivered",
+        )
+
+    async def mark_recipient_failed(
+        self,
+        report_id: str,
+        *,
+        recipient_key: str,
+        error_code: str,
+        error_message: str,
+    ) -> None:
+        await self._request(
+            "POST",
+            f"/api/v1/internal/report-outbox/{report_id}/recipients/{recipient_key}/failed",
             body={
                 "error_code": error_code,
                 "error_message": error_message,
@@ -203,6 +267,14 @@ class DryRunTelegramClient:
 
 def parse_allowed_ids(value: str) -> list[str]:
     return [part for part in re.split(r"[\s,;]+", value.strip()) if part]
+
+
+def recipient_key_for_chat_id(
+    chat_id: str,
+    *,
+    secret: str,
+) -> str:
+    return hmac.new(secret.encode("utf-8"), chat_id.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def resolve_bot_env_file() -> Path:
@@ -285,20 +357,49 @@ async def run_once(
     failed = 0
     messages_sent = 0
     for report in reports:
+        recipient_keys = [
+            recipient_key_for_chat_id(chat_id, secret=config.recipient_key_secret)
+            for chat_id in config.allowed_ids
+        ]
+        recipient_statuses = await core_client.register_recipients(
+            report.id,
+            recipient_keys=recipient_keys,
+        )
+        report_failed = False
+        failed_recipient_key: str | None = None
         try:
             chunks = split_telegram_message(report.payload_markdown)
-            for chat_id in config.allowed_ids:
+            for chat_id, recipient_key in zip(config.allowed_ids, recipient_keys, strict=True):
+                if recipient_statuses.get(recipient_key) == "delivered":
+                    continue
+                failed_recipient_key = recipient_key
                 for chunk in chunks:
                     await telegram_client.send_message(chat_id=chat_id, text=chunk)
                     messages_sent += 1
+                await core_client.mark_recipient_delivered(
+                    report.id,
+                    recipient_key=recipient_key,
+                )
+                recipient_statuses[recipient_key] = "delivered"
+                failed_recipient_key = None
         except Exception as exc:
+            report_failed = True
+            if failed_recipient_key is not None:
+                await core_client.mark_recipient_failed(
+                    report.id,
+                    recipient_key=failed_recipient_key,
+                    error_code="telegram_delivery_failed",
+                    error_message=safe_error_message(exc),
+                )
             failed += 1
             await core_client.mark_failed(
                 report.id,
                 error_code="telegram_delivery_failed",
                 error_message=safe_error_message(exc),
             )
-        else:
+        if not report_failed and all(
+            recipient_statuses.get(recipient_key) == "delivered" for recipient_key in recipient_keys
+        ):
             delivered += 1
             await core_client.mark_delivered(report.id)
 
@@ -340,9 +441,15 @@ async def async_main(argv: list[str] | None = None) -> int:
     allowed_ids = parse_allowed_ids(os.environ.get("ALLOWED_IDS", ""))
     if not allowed_ids:
         raise SystemExit("ALLOWED_IDS is required")
+    recipient_key_secret = os.environ.get("REPORT_RECIPIENT_KEY_SECRET", "")
+    if not recipient_key_secret:
+        raise SystemExit("REPORT_RECIPIENT_KEY_SECRET is required")
+    if len(recipient_key_secret) < MIN_RECIPIENT_KEY_SECRET_LENGTH:
+        raise SystemExit("REPORT_RECIPIENT_KEY_SECRET must be at least 32 characters")
 
     config = ReportSenderConfig(
         allowed_ids=allowed_ids,
+        recipient_key_secret=recipient_key_secret,
         business_date=business_date,
         dry_run=args.dry_run,
         retry_failed=args.retry_failed,
