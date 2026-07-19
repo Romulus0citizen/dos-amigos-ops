@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Dos Amigos daily COO morning reconciliation
+
+[Timer]
+OnCalendar=*-*-* 06:00:00 Asia/Yekaterinburg
+Persistent=true
+Unit=dos-amigos-daily-coo-reconcile.service
+
+[Install]
+WantedBy=timers.target

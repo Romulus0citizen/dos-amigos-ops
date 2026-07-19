@@ -2,6 +2,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 from apps.core.app.models import IikoSalesDaily, IntegrationCapability
 from apps.core.app.models.base import Base
+from apps.core.app.models.sales import HermesReportRecipientDelivery
 
 
 def test_required_integration_tables_are_registered() -> None:
@@ -14,6 +15,8 @@ def test_required_integration_tables_are_registered() -> None:
         "iiko_sales_daily",
         "iiko_sales_daily_payments",
         "iiko_sales_daily_products",
+        "daily_coo_report_runs",
+        "hermes_report_recipient_deliveries",
     }.issubset(Base.metadata.tables)
 
 
@@ -116,3 +119,11 @@ def test_sales_payment_and_product_deterministic_keys() -> None:
     assert any(
         constraint.name == "uq_iiko_sales_daily_product_key" for constraint in product_constraints
     )
+
+
+def test_report_recipient_delivery_has_cascade_foreign_key() -> None:
+    foreign_keys = list(HermesReportRecipientDelivery.__table__.foreign_keys)
+
+    assert len(foreign_keys) == 1
+    assert foreign_keys[0].target_fullname == "hermes_report_outbox.id"
+    assert foreign_keys[0].ondelete == "CASCADE"

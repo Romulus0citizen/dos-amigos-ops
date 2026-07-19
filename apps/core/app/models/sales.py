@@ -9,6 +9,7 @@ from sqlalchemy import (
     Boolean,
     Date,
     DateTime,
+    ForeignKey,
     Index,
     Integer,
     Numeric,
@@ -200,3 +201,69 @@ class HermesReportOutbox(Base):
         server_default=func.now(),
     )
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class HermesReportRecipientDelivery(Base):
+    __tablename__ = "hermes_report_recipient_deliveries"
+    __table_args__ = (
+        UniqueConstraint(
+            "report_id",
+            "recipient_key",
+            name="uq_hermes_report_recipient_delivery_report_recipient",
+        ),
+        Index(
+            "ix_hermes_report_recipient_delivery_report",
+            "report_id",
+        ),
+        Index(
+            "ix_hermes_report_recipient_delivery_status",
+            "delivery_status",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_string)
+    report_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("hermes_report_outbox.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    recipient_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    delivery_status: Mapped[str] = mapped_column(String(30), nullable=False, default="pending")
+    delivery_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error_code: Mapped[str | None] = mapped_column(String(120))
+    error_message_redacted: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class DailyCooReportRun(Base):
+    __tablename__ = "daily_coo_report_runs"
+    __table_args__ = (
+        Index("ix_daily_coo_report_runs_mode_started", "mode", "started_at"),
+        Index("ix_daily_coo_report_runs_business_date", "business_date"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid_string)
+    mode: Mapped[str] = mapped_column(String(30), nullable=False)
+    organization_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    business_date: Mapped[date] = mapped_column(Date, nullable=False)
+    business_timezone: Mapped[str] = mapped_column(String(100), nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    dry_run: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    outbox_id: Mapped[str | None] = mapped_column(String(36))
+    correction_outbox_id: Mapped[str | None] = mapped_column(String(36))
+    error_code: Mapped[str | None] = mapped_column(String(120))
+    error_message_redacted: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )

@@ -12,9 +12,11 @@ from apps.core.app.api.routes import report_outbox as report_outbox_routes
 from apps.core.app.core.config import Settings
 from apps.core.app.db.session import get_db
 from apps.core.app.main import app
-from apps.core.app.models.sales import HermesReportOutbox
+from apps.core.app.models.sales import HermesReportOutbox, HermesReportRecipientDelivery
 
 NOW = datetime(2026, 7, 17, tzinfo=UTC)
+RECIPIENT_A = "a" * 64
+RECIPIENT_B = "b" * 64
 
 
 def session_factory():
@@ -24,6 +26,7 @@ def session_factory():
         poolclass=StaticPool,
     )
     HermesReportOutbox.__table__.create(engine)
+    HermesReportRecipientDelivery.__table__.create(engine)
     return sessionmaker(bind=engine, expire_on_commit=False)
 
 
@@ -213,3 +216,103 @@ def test_report_outbox_failed_increments_attempts_and_redacts_error(monkeypatch)
         assert "100100100" not in row.error_message_redacted
         assert "Bearer" not in row.error_message_redacted
         assert "secret-token" not in row.error_message_redacted
+
+
+def test_report_outbox_tracks_recipient_delivery_without_raw_telegram_ids(monkeypatch) -> None:
+    SessionLocal = session_factory()
+    with SessionLocal() as session:
+        add_outbox(session, "report-1", date(2026, 7, 16))
+        session.commit()
+
+    install_overrides(SessionLocal, monkeypatch)
+    try:
+        client = TestClient(app)
+        registered = client.post(
+            "/api/v1/internal/report-outbox/report-1/recipients",
+            headers={"Authorization": "Bearer secret-token"},
+            json={"recipient_keys": [RECIPIENT_A, RECIPIENT_B]},
+        )
+        delivered = client.post(
+            f"/api/v1/internal/report-outbox/report-1/recipients/{RECIPIENT_A}/delivered",
+            headers={"Authorization": "Bearer secret-token"},
+        )
+        failed = client.post(
+            f"/api/v1/internal/report-outbox/report-1/recipients/{RECIPIENT_B}/failed",
+            headers={"Authorization": "Bearer secret-token"},
+            json={
+                "error_code": "telegram_delivery_failed",
+                "error_message": "chat 100100100 failed",
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert registered.status_code == 200
+    assert registered.json()["recipients"] == {
+        RECIPIENT_A: "pending",
+        RECIPIENT_B: "pending",
+    }
+    assert delivered.status_code == 200
+    assert failed.status_code == 200
+    with SessionLocal() as session:
+        rows = list(
+            session.scalars(
+                select(HermesReportRecipientDelivery).order_by(
+                    HermesReportRecipientDelivery.recipient_key
+                )
+            )
+        )
+        assert [row.recipient_key for row in rows] == [RECIPIENT_A, RECIPIENT_B]
+        assert [row.delivery_status for row in rows] == ["delivered", "failed"]
+        assert rows[0].delivery_attempts == 1
+        assert rows[1].delivery_attempts == 1
+        assert rows[1].error_message_redacted is not None
+        assert "100100100" not in rows[1].error_message_redacted
+
+
+def test_report_outbox_rejects_invalid_recipient_key(monkeypatch) -> None:
+    SessionLocal = session_factory()
+    with SessionLocal() as session:
+        add_outbox(session, "report-1", date(2026, 7, 16))
+        session.commit()
+
+    install_overrides(SessionLocal, monkeypatch)
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/v1/internal/report-outbox/report-1/recipients",
+            headers={"Authorization": "Bearer secret-token"},
+            json={"recipient_keys": ["recipient-a"]},
+        )
+        path_response = client.post(
+            "/api/v1/internal/report-outbox/report-1/recipients/not-hex/delivered",
+            headers={"Authorization": "Bearer secret-token"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 422
+    assert path_response.status_code == 422
+
+
+def test_report_outbox_deduplicates_recipient_keys(monkeypatch) -> None:
+    SessionLocal = session_factory()
+    with SessionLocal() as session:
+        add_outbox(session, "report-1", date(2026, 7, 16))
+        session.commit()
+
+    install_overrides(SessionLocal, monkeypatch)
+    try:
+        response = TestClient(app).post(
+            "/api/v1/internal/report-outbox/report-1/recipients",
+            headers={"Authorization": "Bearer secret-token"},
+            json={"recipient_keys": [RECIPIENT_A, RECIPIENT_A]},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["recipients"] == {RECIPIENT_A: "pending"}
+    with SessionLocal() as session:
+        rows = list(session.scalars(select(HermesReportRecipientDelivery)))
+        assert len(rows) == 1

@@ -8,10 +8,14 @@ import pytest
 from ops.telegram.report_sender import (
     ReportOutboxItem,
     ReportSenderConfig,
+    async_main,
     load_bot_env_file,
+    recipient_key_for_chat_id,
     run_once,
     split_telegram_message,
 )
+
+TEST_RECIPIENT_SECRET = "test-recipient-secret-32-bytes!!"
 
 
 class FakeCoreClient:
@@ -21,6 +25,7 @@ class FakeCoreClient:
         self.pending_calls: list[tuple[date | None, bool]] = []
         self.delivered_ids: list[str] = []
         self.failed: list[tuple[str, str, str]] = []
+        self.recipient_statuses: dict[tuple[str, str], str] = {}
 
     async def get_pending(
         self,
@@ -54,6 +59,29 @@ class FakeCoreClient:
         self.statuses[report_id] = "failed"
         self.failed.append((report_id, error_code, error_message))
 
+    async def register_recipients(
+        self,
+        report_id: str,
+        *,
+        recipient_keys: list[str],
+    ) -> dict[str, str]:
+        for key in recipient_keys:
+            self.recipient_statuses.setdefault((report_id, key), "pending")
+        return {key: self.recipient_statuses[(report_id, key)] for key in recipient_keys}
+
+    async def mark_recipient_delivered(self, report_id: str, *, recipient_key: str) -> None:
+        self.recipient_statuses[(report_id, recipient_key)] = "delivered"
+
+    async def mark_recipient_failed(
+        self,
+        report_id: str,
+        *,
+        recipient_key: str,
+        error_code: str,
+        error_message: str,
+    ) -> None:
+        self.recipient_statuses[(report_id, recipient_key)] = "failed"
+
 
 class FakeTelegramClient:
     def __init__(self, *, fail_chat_id: str | None = None) -> None:
@@ -78,7 +106,10 @@ def report_item(report_id: str = "report-1") -> ReportOutboxItem:
 async def test_sender_delivers_to_two_allowed_ids_and_marks_delivered() -> None:
     core = FakeCoreClient([report_item()])
     telegram = FakeTelegramClient()
-    config = ReportSenderConfig(allowed_ids=["1001", "1002"])
+    config = ReportSenderConfig(
+        allowed_ids=["1001", "1002"],
+        recipient_key_secret=TEST_RECIPIENT_SECRET,
+    )
 
     result = await run_once(config=config, core_client=core, telegram_client=telegram)
 
@@ -98,7 +129,10 @@ async def test_sender_delivers_to_two_allowed_ids_and_marks_delivered() -> None:
 async def test_sender_repeated_run_does_not_resend_delivered_report() -> None:
     core = FakeCoreClient([report_item()])
     telegram = FakeTelegramClient()
-    config = ReportSenderConfig(allowed_ids=["1001", "1002"])
+    config = ReportSenderConfig(
+        allowed_ids=["1001", "1002"],
+        recipient_key_secret=TEST_RECIPIENT_SECRET,
+    )
 
     first = await run_once(config=config, core_client=core, telegram_client=telegram)
     second = await run_once(config=config, core_client=core, telegram_client=telegram)
@@ -112,7 +146,10 @@ async def test_sender_repeated_run_does_not_resend_delivered_report() -> None:
 async def test_sender_marks_failed_when_one_recipient_fails_without_leaking_chat_id() -> None:
     core = FakeCoreClient([report_item()])
     telegram = FakeTelegramClient(fail_chat_id="1002")
-    config = ReportSenderConfig(allowed_ids=["1001", "1002"])
+    config = ReportSenderConfig(
+        allowed_ids=["1001", "1002"],
+        recipient_key_secret=TEST_RECIPIENT_SECRET,
+    )
 
     result = await run_once(config=config, core_client=core, telegram_client=telegram)
 
@@ -124,12 +161,21 @@ async def test_sender_marks_failed_when_one_recipient_fails_without_leaking_chat
     assert core.failed[0][0] == "report-1"
     assert core.failed[0][1] == "telegram_delivery_failed"
     assert "1002" not in core.failed[0][2]
+    first_key = recipient_key_for_chat_id("1001", secret=TEST_RECIPIENT_SECRET)
+    second_key = recipient_key_for_chat_id("1002", secret=TEST_RECIPIENT_SECRET)
+    assert core.recipient_statuses[("report-1", first_key)] == "delivered"
+    assert core.recipient_statuses[("report-1", second_key)] == "failed"
+    assert "1001" not in first_key
+    assert "1002" not in second_key
 
 
 async def test_sender_retries_failed_report_only_with_explicit_retry_failed_flag() -> None:
     core = FakeCoreClient([report_item()])
     failing_telegram = FakeTelegramClient(fail_chat_id="1002")
-    normal_config = ReportSenderConfig(allowed_ids=["1001", "1002"])
+    normal_config = ReportSenderConfig(
+        allowed_ids=["1001", "1002"],
+        recipient_key_secret=TEST_RECIPIENT_SECRET,
+    )
 
     first = await run_once(
         config=normal_config,
@@ -141,13 +187,22 @@ async def test_sender_retries_failed_report_only_with_explicit_retry_failed_flag
         core_client=core,
         telegram_client=FakeTelegramClient(),
     )
+    retry_telegram = FakeTelegramClient()
     retry = await run_once(
-        config=ReportSenderConfig(allowed_ids=["1001", "1002"], retry_failed=True),
+        config=ReportSenderConfig(
+            allowed_ids=["1001", "1002"],
+            retry_failed=True,
+            recipient_key_secret=TEST_RECIPIENT_SECRET,
+        ),
         core_client=core,
-        telegram_client=FakeTelegramClient(),
+        telegram_client=retry_telegram,
     )
     after_success = await run_once(
-        config=ReportSenderConfig(allowed_ids=["1001", "1002"], retry_failed=True),
+        config=ReportSenderConfig(
+            allowed_ids=["1001", "1002"],
+            retry_failed=True,
+            recipient_key_secret=TEST_RECIPIENT_SECRET,
+        ),
         core_client=core,
         telegram_client=FakeTelegramClient(),
     )
@@ -159,12 +214,17 @@ async def test_sender_retries_failed_report_only_with_explicit_retry_failed_flag
     assert list(core.reports) == ["report-1"]
     assert core.delivered_ids == ["report-1"]
     assert core.statuses == {"report-1": "delivered"}
+    assert retry_telegram.sent == [("1002", "Dos Amigos — итоги 16.07.2026")]
 
 
 async def test_sender_dry_run_sends_nothing_and_does_not_mutate_outbox() -> None:
     core = FakeCoreClient([report_item()])
     telegram = FakeTelegramClient()
-    config = ReportSenderConfig(allowed_ids=["1001", "1002"], dry_run=True)
+    config = ReportSenderConfig(
+        allowed_ids=["1001", "1002"],
+        dry_run=True,
+        recipient_key_secret=TEST_RECIPIENT_SECRET,
+    )
 
     result = await run_once(config=config, core_client=core, telegram_client=telegram)
 
@@ -202,3 +262,25 @@ def test_load_bot_env_file_missing_file_fails_safely(tmp_path) -> None:
         load_bot_env_file(tmp_path / "missing.env")
 
     assert str(exc_info.value) == "BOT_ENV_FILE is missing"
+
+
+def test_recipient_secret_rotation_changes_keys_explicitly() -> None:
+    first = recipient_key_for_chat_id("1001", secret=TEST_RECIPIENT_SECRET)
+    second = recipient_key_for_chat_id("1001", secret="another-recipient-secret-32-chars")
+
+    assert first != second
+    assert len(first) == 64
+    assert first == first.lower()
+
+
+async def test_async_main_requires_recipient_key_secret(tmp_path, monkeypatch) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("BOT_TOKEN=test-token\nALLOWED_IDS=1001,1002\n", encoding="utf-8")
+    monkeypatch.setenv("BOT_ENV_FILE", str(env_file))
+    monkeypatch.delenv("REPORT_RECIPIENT_KEY_SECRET", raising=False)
+    monkeypatch.delenv("REPORT_OUTBOX_INTERNAL_TOKEN", raising=False)
+
+    with pytest.raises(SystemExit) as exc_info:
+        await async_main(["--dry-run", "--json"])
+
+    assert str(exc_info.value) == "REPORT_RECIPIENT_KEY_SECRET is required"
